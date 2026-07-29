@@ -31,6 +31,7 @@ test("Persona MCP exposes and executes the local character tools", async (contex
     monitoring: true,
     source: null,
   };
+  const speeches = [];
   const mcpHandler = createPersonaMcpHandler({
     onAnimation: (animation) => animations.push(animation),
     onWindowAction: (action) => {
@@ -40,7 +41,13 @@ test("Persona MCP exposes and executes the local character tools", async (contex
       else windowVisible = !windowVisible;
       return windowVisible;
     },
-    getStatus: () => ({ windowVisible, voiceState, listener }),
+    getStatus: () => ({ windowVisible, voiceState, listener, speaking: false }),
+    onSpeak: async ({ text }) => {
+      speeches.push(text);
+      return { spoken: true, audio: false, voice: "test", characters: text.length, preview: text };
+    },
+    onListen: async () => {},
+    onStopSpeaking: async () => {},
   });
   const bridge = createBridgeServer({
     port: 0,
@@ -62,7 +69,7 @@ test("Persona MCP exposes and executes the local character tools", async (contex
 
   assert.deepEqual(
     tools.tools.map((tool) => tool.name),
-    ["play_animation", "control_window", "get_status"],
+    ["speak", "listen", "stop_speaking", "play_animation", "control_window", "get_status"],
   );
   assert.equal(client.getInstructions(), SERVER_INSTRUCTIONS);
   assert.deepEqual(
@@ -78,6 +85,10 @@ test("Persona MCP exposes and executes the local character tools", async (contex
     WINDOW_ACTIONS,
   );
 
+  const speakResult = await client.callTool({
+    name: "speak",
+    arguments: { text: "Szia, ez egy teszt.", audio: false },
+  });
   const animationResult = await client.callTool({
     name: "play_animation",
     arguments: { animation: "finger-gun" },
@@ -91,14 +102,17 @@ test("Persona MCP exposes and executes the local character tools", async (contex
     arguments: {},
   });
 
+  assert.deepEqual(speeches, ["Szia, ez egy teszt."]);
   assert.deepEqual(animations, ["finger-gun"]);
   assert.deepEqual(windowActions, ["show"]);
+  assert.match(speakResult.content[0].text, /spoke/);
   assert.match(animationResult.content[0].text, /finger-gun animation/);
   assert.match(windowResult.content[0].text, /now visible/);
   assert.deepEqual(JSON.parse(statusResult.content[0].text), {
     windowVisible: true,
     voiceState,
     listener,
+    speaking: false,
   });
 });
 

@@ -1,7 +1,12 @@
 # Releasing Persona
 
-GitHub releases are produced only from version tags. The expected repository is
-`https://github.com/xikhar/persona`; the workflow does not create or push to it.
+GitHub releases are produced only from version tags. Upstream automation
+expects `https://github.com/xikhar/persona`; a Grok-oriented fork should point
+`package.json` / workflows at its own repository before tagging.
+
+App behavior for Grok Build (MCP, hooks, TTS, chat terminal) is documented in
+[README.md](../README.md) and [INTEGRATIONS.md](INTEGRATIONS.md). Release gates
+for character media are unchanged: no shipping test-only VRM/VRMA.
 
 ## One-time repository setup
 

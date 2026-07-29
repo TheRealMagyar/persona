@@ -16,11 +16,25 @@ export function configureAnimationAction(
   return action;
 }
 
+/**
+ * Soft blend between clips. Never hard-stop the previous action here — that
+ * caused sticky / uneven motion. The mixer keeps both weighted during fade.
+ */
 export function crossFadeAnimationActions(
   previous: THREE.AnimationAction | null,
   next: THREE.AnimationAction,
   duration: number,
 ): void {
-  previous?.fadeOut(duration);
-  next.setEffectiveWeight(1).fadeIn(duration).play();
+  const fade = Math.max(0.12, duration);
+  next.enabled = true;
+  next.setEffectiveTimeScale(1);
+  next.reset();
+  next.setEffectiveWeight(1);
+
+  if (previous && previous !== next) {
+    previous.enabled = true;
+    previous.fadeOut(fade);
+  }
+
+  next.fadeIn(fade).play();
 }

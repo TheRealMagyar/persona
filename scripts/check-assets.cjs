@@ -9,6 +9,7 @@ const MANIFEST_PATH = path.join(ASSET_ROOT, "manifest.json");
 const EXPECTED_ASSETS = [
   "model.vrm",
   "animations/idle.vrma",
+  "animations/idle2.vrma",
   "animations/talk1.vrma",
   "animations/talk2.vrma",
   "animations/talk3.vrma",
@@ -20,6 +21,7 @@ const EXPECTED_ASSETS = [
 const EXPECTED_ASSET_ROLES = {
   "model.vrm": "model",
   "animations/idle.vrma": "idle",
+  "animations/idle2.vrma": "idle",
   "animations/talk1.vrma": "talk",
   "animations/talk2.vrma": "talk",
   "animations/talk3.vrma": "talk",
@@ -59,6 +61,10 @@ function validateAssets({
   const expected = [...EXPECTED_ASSETS].sort();
   const actual = listRuntimeAssets(assetRoot);
   const mediaAbsent = actual.length === 0;
+  // Local-only: model.vrm without animations is enough to open the character.
+  // Full animation packs remain the complete contract.
+  const modelOnly =
+    actual.length === 1 && actual[0] === "model.vrm";
   if (JSON.stringify(manifestPaths) !== JSON.stringify(expected)) {
     errors.push("Asset manifest paths do not match Persona's stable asset contract.");
   }
@@ -67,16 +73,25 @@ function validateAssets({
       errors.push(`Incorrect asset role for ${asset.path ?? "unknown asset"}.`);
     }
   }
-  if ((!mediaAbsent || release) && JSON.stringify(actual) !== JSON.stringify(expected)) {
+  if (
+    (!mediaAbsent || release) &&
+    !modelOnly &&
+    JSON.stringify(actual) !== JSON.stringify(expected)
+  ) {
     errors.push("Runtime asset files do not match Persona's stable asset contract.");
   }
 
-  if (!mediaAbsent || release) {
+  if ((!mediaAbsent || release) && !modelOnly) {
     for (const relative of EXPECTED_ASSETS) {
       const absolute = path.join(assetRoot, relative);
       if (!fs.existsSync(absolute) || fs.statSync(absolute).size === 0) {
         errors.push(`Missing or empty asset: ${relative}`);
       }
+    }
+  } else if (modelOnly && !release) {
+    const modelPath = path.join(assetRoot, "model.vrm");
+    if (!fs.existsSync(modelPath) || fs.statSync(modelPath).size === 0) {
+      errors.push("Missing or empty asset: model.vrm");
     }
   }
 

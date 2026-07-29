@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useLayoutEffect } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import type * as THREE from 'three';
 import { useVrmLoader } from '../hooks/useVrmLoader';
@@ -31,9 +31,20 @@ function AvatarModel({
   const updateLipSync = useAmplitudeLipSync(vrm);
   const updateBlink = useBlink(vrm);
 
+  // Keep latest completion handler without re-triggering play().
+  const completeRef = useRef(onAnimationComplete);
+  completeRef.current = onAnimationComplete;
+
   useEffect(() => {
-    void play(animation, { onComplete: onAnimationComplete, playback });
-  }, [animation, animationRequest, onAnimationComplete, play, playback]);
+    void play(animation, {
+      playback,
+      // One-shots must restart when the user presses the same button again.
+      force: playback === 'once',
+      onComplete: () => completeRef.current(),
+    });
+    // Intentionally NOT depending on onAnimationComplete identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [animation, animationRequest, playback, play]);
 
   useLayoutEffect(() => {
     if (vrm) onReady?.(vrm.scene);
@@ -41,10 +52,11 @@ function AvatarModel({
 
   useFrame((_, delta) => {
     if (!vrm) return;
-    updateAnimation(delta);
-    updateBlink(delta);
-    updateLipSync(delta, audioLevel, speaking);
-    vrm.update(delta);
+    const safeDelta = Math.min(delta, 1 / 30);
+    updateAnimation(safeDelta);
+    updateBlink(safeDelta);
+    updateLipSync(safeDelta, audioLevel, speaking);
+    vrm.update(safeDelta);
   });
 
   return vrm ? <primitive object={vrm.scene} /> : null;

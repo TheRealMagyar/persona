@@ -1,101 +1,151 @@
-# Developing Persona
+# Developing Persona (Grok Build)
 
 ## Architecture
 
-Persona has four intentionally narrow layers:
+Persona has intentionally narrow layers:
 
-1. Native listeners discover a supported voice process and calculate a
-   normalized output level.
-2. The Electron main process owns lifecycle, window behavior, tray commands,
-   URL handling, the local adapter, and Persona's MCP controls.
-3. The sandboxed preload exposes only normalized Persona events.
-4. React and Three.js render the model, blend VRMA motion, and drive VRM
-   expressions.
+1. **Native / PipeWire listeners** (optional) — discover Codex/ChatGPT playback and emit normalized levels.  
+2. **Speech driver** — local TTS + synthetic level envelope for text chat.  
+3. **Electron main** — window, tray, shortcuts, bridge HTTP, MCP, chat (`grok -p`), protocol URLs.  
+4. **Preload** — sandboxed bridge: events, chat, visibility, hide.  
+5. **Renderer (React + Three.js + VRM)** — model, one stable idle/talk loop, one-shot clips, lip sync, blink, UI chrome + terminal.
 
-No renderer code has filesystem, process, or raw-audio access.
+No renderer access to filesystem, process list, or raw audio.
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  Grok Build / Codex                                     │
+│   MCP tools · HTTP hooks · optional process audio       │
+└───────────────────────┬─────────────────────────────────┘
+                        │ 127.0.0.1:47831
+┌───────────────────────▼─────────────────────────────────┐
+│  Electron main                                          │
+│   bridge-server · mcp-server · speech-driver            │
+│   chat-service · process discovery · native helper      │
+└───────────────────────┬─────────────────────────────────┘
+                        │ IPC (preload)
+┌───────────────────────▼─────────────────────────────────┐
+│  Renderer                                               │
+│   Scene / Avatar · ChatTerminal · WindowChrome          │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Key modules
+
+| Path | Role |
+| --- | --- |
+| `electron/main.cjs` | App lifecycle, window, tray, wiring |
+| `electron/bridge-server.cjs` | HTTP: health, events, speak, hooks, MCP |
+| `electron/mcp-server.cjs` | MCP tool schemas + handlers |
+| `electron/speech-driver.cjs` | TTS + lip envelope |
+| `electron/chat-service.cjs` | Headless `grok -p` for terminal |
+| `electron/voice-app-identity.cjs` | Process identity patterns |
+| `electron/process-discovery.cjs` | macOS/Windows process trees |
+| `electron/native-process-audio-listener.cjs` | Spawns native helper + backoff |
+| `electron/linux-pipewire-listener.cjs` | Linux capture |
+| `src/hooks/useVrmAnimation.ts` | Stable clip play (no idle restart thrash) |
+| `src/hooks/useAmplitudeLipSync.ts` | Visemes from level |
+| `src/components/ChatTerminal.tsx` | In-window chat UI |
+| `src/components/WindowChrome.tsx` | Drag bar |
+| `scripts/fetch-dev-assets.cjs` | Free local-dev VRM/VRMA download |
+| `scripts/grok-persona-hooks/` | Hook install samples |
+
+## Animation policy
+
+- **Idle / talk:** one primary clip each, `LoopRepeat`, never re-`play()` while already on that type.  
+- **One-shots** (greeting, happy, dance, finger-gun): `LoopOnce`, force restart on button/MCP.  
+- Soft crossfades only; no hard-stop mid-pose.  
+- Do not rotate idle clips on a timer (that looked like “replaying” while idle).  
+- Frame delta clamped (~1/30s) to avoid hitch spikes.
+
+Primary files: `public/assets/animations/idle.vrma`, `talk1.vrma`, etc. Catalog: `src/animation-catalog.ts`.
 
 ## MCP contract
 
-`electron/mcp-server.cjs` owns the Codex-facing tool schemas and translates
-validated tool calls into narrow main-process callbacks. It does not receive
-the Electron application object, renderer access, arbitrary animation paths, or
-shell execution.
+`electron/mcp-server.cjs` owns tool schemas and maps calls to main callbacks only.
+It does not receive the Electron `app` object, renderer handles, arbitrary paths,
+or shell execution.
 
-The existing loopback server routes `POST /mcp` into a fresh stateless
-Streamable HTTP transport for each request. This keeps the MCP layer
-request-response only: Persona does not need sessions, server-initiated
-notifications, or an additional listening port.
+Each `POST /mcp` uses a fresh Streamable HTTP transport (stateless).
 
-When extending the server:
+When extending tools:
 
-- prefer a small product action over exposing an internal Electron primitive;
-- validate every argument with a closed schema;
-- mark read-only and side-effecting tools accurately;
-- keep the server instructions self-contained; and
-- add a protocol-level client test for discovery, valid calls, and rejected
-  input.
+- prefer a small product action over internal Electron primitives;  
+- closed schemas for every argument;  
+- accurate read-only / side-effect hints;  
+- self-contained server instructions;  
+- protocol-level tests for discovery, valid calls, and rejects.
 
 ## Listener contract
 
-All operating systems implement:
+All platforms:
 
-- `onSession(active)` for coarse lifecycle;
-- `onActivity("listening" | "speaking")`;
-- `onLevel(0..1)` for lip movement; and
-- `onStatus(...)` for diagnostics.
+- `onSession(active)`  
+- `onActivity("listening" | "speaking")`  
+- `onLevel(0..1)`  
+- `onStatus(...)`
 
-`AudioActivityGate` owns the shared short-silence behavior. Lips follow every
-level immediately. The body remains in its talking motion for 900 ms of silence
-before returning to listening, preventing sentence gaps from causing abrupt
-animation changes.
+`AudioActivityGate` smooths short silences for body talk vs lips.
 
-Linux implements the contract directly with PipeWire commands. macOS and
-Windows helpers write newline-delimited JSON to stdout:
+Native helpers (macOS/Windows) emit NDJSON on stdout:
 
 ```json
-{"type":"ready","source":"Windows process audio"}
+{"type":"ready","source":"macOS process audio"}
 {"type":"level","level":0.21}
+{"type":"error","message":"..."}
 ```
+
+Failed captures use backoff (5s → 60s). Default process match excludes Grok CLI;
+see [INTEGRATIONS.md](INTEGRATIONS.md).
 
 ## Commands
 
 ```bash
 npm run lint
-npm test
+npm test                 # node + vitest
+npm run test:node
+npm run test:renderer
 npm run assets:check
+npm run assets:dev-pack
 npm run build
 npm run native:build
 npm run native:test
+npm run dev              # Vite HMR + Electron
+npm start                # Electron only (uses dist/)
+npm run demo             # build + start
+npm run check            # lint, test, assets, audit, build
 ```
 
-`npm run check` runs the platform-neutral checks together.
+`npm start` / `npm run demo` run `env -u ELECTRON_RUN_AS_NODE` so a polluted shell
+does not break Electron.
 
-The native build command:
+Native build:
 
-- does nothing on Linux because the runtime uses installed PipeWire commands;
-- compiles Objective-C++ against Core Audio on macOS; and
-- locates Visual Studio Build Tools and compiles C++ against WASAPI on Windows.
+- **Linux** — no compile; uses system PipeWire tools  
+- **macOS** — Objective-C++ / Core Audio → `native/bin/darwin/persona-audio-listener`  
+- **Windows** — VS Build Tools / WASAPI → `native/bin/win32/…`
 
-Linux packaging detects NixOS and runs `fpm` from `nixpkgs#fpm`, avoiding the
-upstream bundled FPM wrapper's `/bin/bash` assumption. Other distributions use
-electron-builder's bundled packaging tool.
+## Tests
 
-## Test coverage
+Node (`electron/*.test.cjs`, `scripts/*.test.cjs`): MCP, bridge, protocol, process
+discovery, speech driver, chat helpers, assets, native paths, etc.
 
-The Node suite covers MCP discovery and tool calls, the bridge boundary, URL
-protocol, Hyprland rules, PipeWire selection and PCM normalization, process
-discovery on macOS and Windows, native NDJSON parsing, shared pause smoothing,
-listener lifecycle, asset safety, and release checksums.
+Vitest: animation catalog, crossfade, priority, camera framing.
 
-Vitest covers the stable animation replacement contract. GitHub Actions then
-compiles and self-tests the native helper on its real operating system and
-builds the renderer on all three platforms.
+CI cannot open a real voice call or grant OS audio permissions — use the manual
+checklist in [RELEASING.md](RELEASING.md) before shipping.
 
-Headless CI cannot create a real Codex voice call or approve operating-system
-audio permissions. Before a release, manually run the checklist in
-[RELEASING.md](RELEASING.md) on each platform.
+## Local debug
+
+```bash
+PERSONA_DEBUG=1 npm start
+curl -s http://127.0.0.1:47831/health
+curl -s -X POST http://127.0.0.1:47831/speak \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Teszt","audio":true}'
+```
 
 ## Native API references
 
-- Apple: [Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
-- Microsoft: [Application loopback audio capture](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)
+- Apple: [Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)  
+- Microsoft: [Application loopback audio capture](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)  

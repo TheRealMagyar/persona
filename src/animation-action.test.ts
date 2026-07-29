@@ -48,7 +48,7 @@ describe('animation playback configuration', () => {
       new THREE.AnimationClip('previous', 2),
     );
     const next = mixer.clipAction(new THREE.AnimationClip('next', 2));
-    previous.play();
+    previous.setEffectiveWeight(1).play();
     mixer.update(0.01);
 
     crossFadeAnimationActions(previous, next, 1);

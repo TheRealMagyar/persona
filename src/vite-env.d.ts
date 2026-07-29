@@ -39,10 +39,20 @@ type AvatarBridgeEvent =
   | { type: 'listener-status'; status: AudioListenerStatus }
   | { type: 'bridge-status'; connected: boolean };
 
+interface PersonaChatResult {
+  ok: boolean;
+  text: string;
+  error?: string;
+  fallback?: boolean;
+}
+
 interface Window {
   personaBridge?: {
     getSnapshot(): Promise<AvatarBridgeEvent | null>;
     hide(): void;
     subscribe(listener: (event: AvatarBridgeEvent) => void): () => void;
+    onVisibility?(listener: (visible: boolean) => void): () => void;
+    chat?(text: string): Promise<PersonaChatResult>;
+    stopSpeaking?(): Promise<void> | void;
   };
 }

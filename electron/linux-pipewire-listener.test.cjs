@@ -46,6 +46,32 @@ test("selects the running Codex output stream and ignores other applications", (
   assert.equal(findCodexOutputNode([helium, idleCodex, runningCodex]), runningCodex);
 });
 
+test("selects a Grok Build playback stream", () => {
+  const helium = pipeWireNode(20, {
+    "application.name": "Helium",
+    "media.class": "Stream/Output/Audio",
+    "object.serial": 120,
+  });
+  const grok = pipeWireNode(
+    55,
+    {
+      "application.name": "Grok",
+      "application.process.binary": "grok",
+      "media.class": "Stream/Output/Audio",
+      "object.serial": 155,
+    },
+    "running",
+  );
+  const versioned = pipeWireNode(56, {
+    "application.process.binary": "grok-0.2.114-macos-aarch64",
+    "media.class": "Stream/Output/Audio",
+    "object.serial": 156,
+  });
+  assert.equal(isCodexOutputNode(grok), true);
+  assert.equal(isCodexOutputNode(versioned), true);
+  assert.equal(findCodexOutputNode([helium, versioned, grok]), grok);
+});
+
 test("rejects Codex nodes that are not playback streams", () => {
   const input = pipeWireNode(30, {
     "application.name": "Codex",

@@ -2,10 +2,13 @@
 
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
+const {
+  DEFAULT_VOICE_APP_PATTERN,
+  buildDefaultPattern,
+  identityMatchesVoiceApp,
+} = require("./voice-app-identity.cjs");
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_VOICE_APP_PATTERN =
-  /(?:^|[\\/\s._=-])(?:codex(?:-desktop)?|chatgpt|openai(?:-codex)?)(?=$|[\\/\s._=-])/i;
 
 function parseMacProcessList(output) {
   return output
@@ -35,8 +38,7 @@ function parseWindowsProcessList(output) {
 }
 
 function identityMatches(process, pattern = DEFAULT_VOICE_APP_PATTERN) {
-  pattern.lastIndex = 0;
-  return pattern.test(`${process.name} ${process.command}`);
+  return identityMatchesVoiceApp(`${process.name} ${process.command}`, pattern);
 }
 
 function selectVoiceProcessTree(processes, {
@@ -76,11 +78,11 @@ function selectVoiceProcessTree(processes, {
 
 function configuredPattern(environment = process.env) {
   const source = environment.PERSONA_TARGET_PROCESS_PATTERN;
-  if (!source) return DEFAULT_VOICE_APP_PATTERN;
+  if (!source) return buildDefaultPattern(environment);
   try {
     return new RegExp(source, "i");
   } catch {
-    return DEFAULT_VOICE_APP_PATTERN;
+    return buildDefaultPattern(environment);
   }
 }
 

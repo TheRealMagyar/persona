@@ -5,6 +5,7 @@ import { Environment, OrbitControls } from '@react-three/drei';
 import dawnEnvironment from '@pmndrs/assets/hdri/dawn.exr';
 import * as THREE from 'three';
 import { Avatar } from './Avatar';
+import { RenderLoopControl } from './RenderLoopControl';
 import type { AnimationType } from '../animation-catalog';
 import { calculateFullBodyFraming } from '../camera-framing';
 
@@ -79,15 +80,18 @@ export function Scene(props: SceneProps) {
   return (
     <Canvas
       camera={{ position: [0, 2, 4.8], fov: 20 }}
-      dpr={[1, 1.5]}
+      // Cap pixel ratio — transparent always-on-top WebGL is expensive on laptops.
+      dpr={1}
       gl={{
-        antialias: true,
+        antialias: false,
         alpha: true,
+        powerPreference: 'low-power',
         toneMapping: THREE.NoToneMapping,
         outputColorSpace: THREE.SRGBColorSpace,
       }}
       style={{ background: 'transparent' }}
     >
+      <RenderLoopControl />
       <directionalLight
         color={[1, 1, 1]}
         position={[-3, 3, 3]}

@@ -64,3 +64,57 @@ test("does not confuse Persona's project path with the Codex application", () =>
   );
   assert.deepEqual(selected, { pids: [], rootPids: [] });
 });
+
+test("does not select Grok CLI by default (no process audio)", () => {
+  const processes = parseMacProcessList(`
+  50 1 /Users/me/.grok/bin/grok /Users/me/.grok/bin/grok agent --reasoning-effort xhigh stdio
+  51 50 /Users/me/.grok/downloads/grok-0.2.114-macos-aarch64 /Users/me/.grok/downloads/grok-0.2.114-macos-aarch64 agent
+  60 1 /Applications/Music.app/MacOS/Music /Applications/Music.app/MacOS/Music
+`);
+  assert.deepEqual(selectVoiceProcessTree(processes, { ownProcessId: 99 }), {
+    pids: [],
+    rootPids: [],
+  });
+});
+
+test("selects the Grok Build CLI when explicitly enabled", () => {
+  const { buildDefaultPattern } = require("./voice-app-identity.cjs");
+  const processes = parseMacProcessList(`
+  50 1 /Users/me/.grok/bin/grok /Users/me/.grok/bin/grok agent --reasoning-effort xhigh stdio
+  51 50 /Users/me/.grok/downloads/grok-0.2.114-macos-aarch64 /Users/me/.grok/downloads/grok-0.2.114-macos-aarch64 agent
+`);
+  assert.deepEqual(
+    selectVoiceProcessTree(processes, {
+      ownProcessId: 99,
+      pattern: buildDefaultPattern({ PERSONA_MATCH_GROK_PROCESS: "1" }),
+    }),
+    { pids: [50, 51], rootPids: [50] },
+  );
+});
+
+test("does not match persona-grok paths or the .grok config directory alone", () => {
+  const selected = selectVoiceProcessTree(
+    [
+      {
+        pid: 70,
+        parentId: 1,
+        name: "node",
+        command: "/usr/bin/node /Users/me/Documents/GitHub/persona-grok/electron/main.cjs",
+      },
+      {
+        pid: 71,
+        parentId: 1,
+        name: "zsh",
+        command: "-zsh",
+      },
+      {
+        pid: 72,
+        parentId: 1,
+        name: "cat",
+        command: "cat /Users/me/.grok/config.toml",
+      },
+    ],
+    { ownProcessId: 999 },
+  );
+  assert.deepEqual(selected, { pids: [], rootPids: [] });
+});

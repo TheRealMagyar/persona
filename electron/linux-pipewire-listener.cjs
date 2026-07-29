@@ -4,11 +4,15 @@ const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const { promisify } = require("node:util");
 const { AudioActivityGate, DEFAULT_SPEECH_RELEASE_MS } = require("./audio-activity-gate.cjs");
+const {
+  DEFAULT_VOICE_APP_PATTERN,
+  identityMatchesVoiceApp,
+} = require("./voice-app-identity.cjs");
 
 const execFileAsync = promisify(execFile);
 const SPEECH_RELEASE_MS = DEFAULT_SPEECH_RELEASE_MS;
-const CODEX_IDENTITY =
-  /(?:^|[\s./=_-])(?:codex(?:-desktop)?|openai(?:-codex)?|chatgpt)(?:$|[\s./=_-])/i;
+/** @deprecated Use DEFAULT_VOICE_APP_PATTERN; kept for test/export compatibility. */
+const CODEX_IDENTITY = DEFAULT_VOICE_APP_PATTERN;
 
 function nodeProperties(node) {
   return node?.info?.props ?? {};
@@ -82,7 +86,7 @@ function isCodexProcessTree(processId, processReader = readProcessInfo) {
     visited.add(currentId);
     try {
       const process = processReader(currentId);
-      if (CODEX_IDENTITY.test(process.identity)) return true;
+      if (identityMatchesVoiceApp(process.identity)) return true;
       currentId = Number(process.parentId);
     } catch {
       return false;
@@ -104,7 +108,7 @@ function isCodexOutputNode(node, processMatcher = isCodexProcessTree) {
   ]
     .filter((value) => value != null)
     .join(" ");
-  if (CODEX_IDENTITY.test(identity)) return true;
+  if (identityMatchesVoiceApp(identity)) return true;
 
   const processId = properties["application.process.id"];
   return processId != null && processMatcher(processId);
@@ -149,7 +153,7 @@ function displayName(node) {
     properties["application.name"] ??
     properties["node.description"] ??
     properties["node.name"] ??
-    "Codex"
+    "voice app"
   );
 }
 

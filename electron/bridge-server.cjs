@@ -3,7 +3,7 @@
 const http = require("node:http");
 
 const DEFAULT_PORT = 47831;
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 128 * 1024;
 const TRUSTED_ORIGIN =
   /^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|codex-app:\/\/[A-Za-z0-9._~-]*)$/i;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -108,6 +108,8 @@ function createBridgeServer({
   port = DEFAULT_PORT,
   onEvent,
   mcpHandler = null,
+  onSpeak = null,
+  onListen = null,
 }) {
   let lastStateEvent = null;
   const server = http.createServer((request, response) => {
@@ -121,6 +123,123 @@ function createBridgeServer({
     if (request.method === "GET" && request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, lastState: lastStateEvent?.state ?? null }));
+      return;
+    }
+
+    // Grok HTTP Stop hook posts the full event envelope here.
+    if (request.url === "/hooks/stop" && request.method === "POST") {
+      if (!originAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (typeof onSpeak !== "function") {
+        response.writeHead(503);
+        response.end();
+        return;
+      }
+      void readJsonBody(request)
+        .then((body) => {
+          const reason = body?.reason ?? body?.hookSpecificOutput?.reason;
+          if (reason === "channel_closed" || reason === "shutdown") {
+            response.writeHead(202, { "content-type": "application/json" });
+            response.end('{"ok":true,"skipped":true}');
+            return;
+          }
+          const text =
+            (typeof body?.lastAssistantMessage === "string" && body.lastAssistantMessage) ||
+            (typeof body?.last_assistant_message === "string" && body.last_assistant_message) ||
+            "";
+          if (!String(text).trim()) {
+            response.writeHead(202, { "content-type": "application/json" });
+            response.end('{"ok":true,"skipped":true}');
+            return;
+          }
+          void Promise.resolve(
+            onSpeak({ text: String(text), audio: true, voice: null }),
+          ).catch(() => {});
+          response.writeHead(202, { "content-type": "application/json" });
+          response.end('{"ok":true,"accepted":true}');
+        })
+        .catch((error) => {
+          if (response.headersSent) return;
+          response.writeHead(error?.code === "BODY_TOO_LARGE" ? 413 : 400);
+          response.end();
+        });
+      return;
+    }
+
+    if (request.url === "/hooks/prompt" && request.method === "POST") {
+      if (!originAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      void readJsonBody(request)
+        .catch(() => ({}))
+        .finally(() => {
+          if (typeof onListen === "function") onListen();
+          if (!response.headersSent) {
+            response.writeHead(202, { "content-type": "application/json" });
+            response.end('{"ok":true}');
+          }
+        });
+      return;
+    }
+
+    // Text-chat / hook endpoint: POST { text, audio?, voice? }
+    if (request.url === "/speak") {
+      if (!originAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "POST" });
+        response.end();
+        return;
+      }
+      if (typeof onSpeak !== "function") {
+        response.writeHead(503, { "content-type": "application/json" });
+        response.end('{"ok":false,"error":"speech unavailable"}');
+        return;
+      }
+      void readJsonBody(request)
+        .then((body) => {
+          const text = typeof body?.text === "string" ? body.text : "";
+          if (!text.trim()) {
+            response.writeHead(422, { "content-type": "application/json" });
+            response.end('{"ok":false,"error":"text required"}');
+            return;
+          }
+          // Fire-and-forget so Grok hooks are not blocked for the full TTS duration.
+          void Promise.resolve(
+            onSpeak({
+              text,
+              audio: body?.audio !== false,
+              voice: typeof body?.voice === "string" ? body.voice : null,
+            }),
+          ).catch(() => {});
+          response.writeHead(202, { "content-type": "application/json" });
+          response.end('{"ok":true,"accepted":true}');
+        })
+        .catch((error) => {
+          if (response.headersSent) return;
+          response.writeHead(error?.code === "BODY_TOO_LARGE" ? 413 : 400);
+          response.end();
+        });
+      return;
+    }
+
+    if (request.url === "/listen" && request.method === "POST") {
+      if (!originAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (typeof onListen === "function") onListen();
+      response.writeHead(202, { "content-type": "application/json" });
+      response.end('{"ok":true}');
       return;
     }
 

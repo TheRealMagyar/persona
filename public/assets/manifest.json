@@ -16,6 +16,12 @@
       "source": null
     },
     {
+      "path": "animations/idle2.vrma",
+      "role": "idle",
+      "license": null,
+      "source": null
+    },
+    {
       "path": "animations/talk1.vrma",
       "role": "talk",
       "license": null,

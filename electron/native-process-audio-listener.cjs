@@ -7,6 +7,7 @@ const { AudioActivityGate, DEFAULT_SPEECH_RELEASE_MS } = require("./audio-activi
 const { discoverVoiceProcesses } = require("./process-discovery.cjs");
 
 const SESSION_IDLE_MS = 8_000;
+const FAILURE_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000];
 
 function helperExecutableName(platform) {
   return platform === "win32" ? "persona-audio-listener.exe" : "persona-audio-listener";
@@ -55,7 +56,7 @@ class NativeProcessAudioListener {
     onLevel = () => {},
     onSession = () => {},
     onStatus = () => {},
-    pollIntervalMs = 1_500,
+    pollIntervalMs = 3_000,
     sessionIdleMs = SESSION_IDLE_MS,
     speechReleaseMs = DEFAULT_SPEECH_RELEASE_MS,
   } = {}) {
@@ -78,6 +79,8 @@ class NativeProcessAudioListener {
     this.stopped = true;
     this.pollInFlight = false;
     this.lastStatusKey = null;
+    /** @type {Map<string, { until: number, streak: number }>} */
+    this.failures = new Map();
     this.gate = new AudioActivityGate({
       onActivity,
       onLevel,
@@ -91,6 +94,26 @@ class NativeProcessAudioListener {
     if (key === this.lastStatusKey) return;
     this.lastStatusKey = key;
     this.onStatus(status);
+  }
+
+  rememberFailure(key) {
+    const prev = this.failures.get(key);
+    const streak = (prev?.streak ?? 0) + 1;
+    const delay =
+      FAILURE_BACKOFF_MS[Math.min(streak - 1, FAILURE_BACKOFF_MS.length - 1)];
+    this.failures.set(key, { until: Date.now() + delay, streak });
+    this.onDebug?.("native listener backoff", { key, streak, delay });
+  }
+
+  clearFailure(key) {
+    this.failures.delete(key);
+  }
+
+  isCoolingDown(key) {
+    const entry = this.failures.get(key);
+    if (!entry) return false;
+    if (Date.now() >= entry.until) return false;
+    return true;
   }
 
   async start() {
@@ -126,7 +149,11 @@ class NativeProcessAudioListener {
         this.platform === "win32" ? processes.rootPids.slice(0, 1) : processes.pids;
       const key = selectedPids.join(",");
       if (!key) {
-        this.detach();
+        // No target app — stay quiet. Do not thrash.
+        if (this.capture) this.detach({ sessionEnded: false });
+        return;
+      }
+      if (this.isCoolingDown(key)) {
         return;
       }
       if (this.capture && this.captureKey === key) return;
@@ -154,7 +181,7 @@ class NativeProcessAudioListener {
     this.capture = child;
     this.captureKey = key;
     const parse = createNdjsonParser(
-      (message) => this.handleHelperMessage(child, message),
+      (message) => this.handleHelperMessage(child, key, message),
       (line) => this.onDebug?.("native listener emitted invalid JSON", line),
     );
     child.stdout.on("data", parse);
@@ -163,6 +190,7 @@ class NativeProcessAudioListener {
       if (this.capture !== child) return;
       this.capture = null;
       this.captureKey = null;
+      this.rememberFailure(key);
       this.reportStatus({
         available: false,
         capturing: false,
@@ -176,6 +204,9 @@ class NativeProcessAudioListener {
       this.capture = null;
       this.captureKey = null;
       this.gate.reset();
+      if (code && !this.stopped) {
+        this.rememberFailure(key);
+      }
       this.reportStatus({
         available: true,
         capturing: false,
@@ -188,9 +219,10 @@ class NativeProcessAudioListener {
     });
   }
 
-  handleHelperMessage(child, message) {
+  handleHelperMessage(child, key, message) {
     if (this.capture !== child || message == null || typeof message !== "object") return;
     if (message.type === "ready") {
+      this.clearFailure(key);
       this.reportStatus({
         available: true,
         capturing: true,
@@ -200,6 +232,13 @@ class NativeProcessAudioListener {
       return;
     }
     if (message.type === "error") {
+      this.rememberFailure(key);
+      // Kill the failing helper so we do not sit on a dead capture handle.
+      try {
+        child.kill();
+      } catch {
+        // ignore
+      }
       this.reportStatus({
         available: false,
         capturing: false,

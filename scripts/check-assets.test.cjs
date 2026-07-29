@@ -24,10 +24,13 @@ function createFixture(context) {
   return { assetRoot, manifestPath };
 }
 
-test("development accepts the complete local set or no media", (context) => {
+test("development accepts the complete local set, model-only, or no media", (context) => {
   assert.deepEqual(validateAssets(), []);
   const fixture = createFixture(context);
   assert.deepEqual(validateAssets(fixture), []);
+  const modelOnly = createFixture(context);
+  fs.writeFileSync(path.join(modelOnly.assetRoot, "model.vrm"), "local model");
+  assert.deepEqual(validateAssets(modelOnly), []);
 });
 
 test("manifest assigns every stable asset its intended semantic role", () => {
@@ -45,7 +48,8 @@ test("manifest assigns every stable asset its intended semantic role", () => {
 
 test("development rejects a partial local media set", (context) => {
   const fixture = createFixture(context);
-  const partial = path.join(fixture.assetRoot, EXPECTED_ASSETS[0]);
+  // A single animation without the model is incomplete (model-only is allowed).
+  const partial = path.join(fixture.assetRoot, "animations/idle.vrma");
   fs.mkdirSync(path.dirname(partial), { recursive: true });
   fs.writeFileSync(partial, "local test media");
   assert.ok(

@@ -170,7 +170,7 @@ test("bridge routes only valid local JSON requests to MCP", async (context) => {
     path: "/mcp",
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ value: "x".repeat(64 * 1024) }),
+    body: JSON.stringify({ value: "x".repeat(200 * 1024) }),
   });
 
   assert.equal(accepted.status, 200);

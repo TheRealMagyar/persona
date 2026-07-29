@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const {
@@ -24,9 +25,11 @@ const {
 const { createAudioListener } = require("./audio-listener.cjs");
 const { isAllowedRendererNavigation } = require("./navigation-policy.cjs");
 const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
+const { SpeechDriver } = require("./speech-driver.cjs");
+const { askPersonaChat } = require("./chat-service.cjs");
 
 const WINDOW_WIDTH = 430;
-const WINDOW_HEIGHT = 680;
+const WINDOW_HEIGHT = 860;
 const startInBackground = process.argv.includes("--background");
 const protocolScheme = "persona";
 const debugEnabled = process.env.PERSONA_DEBUG === "1";
@@ -38,7 +41,11 @@ let latestEvent = null;
 let latestListenerStatus = null;
 let latestVoiceState = null;
 let audioListener = null;
+let speechDriver = null;
+let lastSpokenText = "";
+let lastSpokenAt = 0;
 let tray = null;
+
 let hyprlandConfigured = false;
 let hyprlandConfiguring = false;
 let hyprlandConfigurationTimer = null;
@@ -105,6 +112,11 @@ function scheduleHyprlandWindowConfiguration({
   hyprlandConfigurationTimer.unref?.();
 }
 
+function notifyRendererVisibility(visible) {
+  if (!avatarWindow || avatarWindow.isDestroyed()) return;
+  avatarWindow.webContents.send("persona:visibility", visible);
+}
+
 function showOverlay({ focus = false } = {}) {
   const window = createWindow();
   if (window.isMinimized()) window.restore();
@@ -114,6 +126,7 @@ function showOverlay({ focus = false } = {}) {
   } else if (!window.isVisible()) {
     window.showInactive();
   }
+  notifyRendererVisibility(true);
   scheduleHyprlandWindowConfiguration();
 }
 
@@ -123,7 +136,22 @@ async function hideOverlay() {
   if (placement) {
     hyprlandLastPosition = { x: placement.x, y: placement.y };
   }
+  notifyRendererVisibility(false);
   avatarWindow?.hide();
+}
+
+function warnIfCharacterMediaMissing() {
+  const modelPath = path.join(__dirname, "..", "public", "assets", "model.vrm");
+  const distModelPath = path.join(__dirname, "..", "dist", "assets", "model.vrm");
+  if (fs.existsSync(modelPath) || fs.existsSync(distModelPath)) return;
+  console.error(
+    [
+      "[persona] Character media is missing — the window will show setup instructions only.",
+      "  Place public/assets/model.vrm (+ animations/*.vrma), or run:",
+      "    npm run assets:dev-model",
+      "  then: npm run demo",
+    ].join("\n"),
+  );
 }
 
 function toggleOverlay() {
@@ -137,17 +165,19 @@ function createWindow() {
   avatarWindow = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
-    minWidth: 320,
-    minHeight: 480,
+    minWidth: 360,
+    minHeight: 640,
     show: false,
     frame: false,
     transparent: true,
     backgroundColor: "#00000000",
-    hasShadow: false,
-    roundedCorners: false,
+    hasShadow: true,
+    roundedCorners: true,
     autoHideMenuBar: true,
     alwaysOnTop: true,
-    skipTaskbar: true,
+    skipTaskbar: false,
+    resizable: true,
+    movable: true,
     title: "Persona",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -160,6 +190,7 @@ function createWindow() {
   avatarWindow.setAlwaysOnTop(true, "floating");
   avatarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   avatarWindow.setOpacity(1);
+  avatarWindow.setMovable(true);
   avatarWindow.once("ready-to-show", () => {
     positionWindow(avatarWindow);
     scheduleHyprlandWindowConfiguration();
@@ -168,11 +199,15 @@ function createWindow() {
     avatarWindow.setAlwaysOnTop(true, "floating");
     avatarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     avatarWindow.setOpacity(1);
+    notifyRendererVisibility(true);
     scheduleHyprlandWindowConfiguration({
       force: true,
       position: hyprlandLastPosition,
       reposition: !hyprlandConfigured || hyprlandLastPosition != null,
     });
+  });
+  avatarWindow.on("hide", () => {
+    notifyRendererVisibility(false);
   });
   avatarWindow.on("close", (event) => {
     if (isQuitting) return;
@@ -266,7 +301,42 @@ function getMcpStatus() {
     windowVisible: avatarWindow?.isVisible() ?? false,
     voiceState: latestVoiceState,
     listener: latestListenerStatus,
+    speaking: speechDriver?.isSpeaking() ?? false,
   };
+}
+
+function mapSpeechAnimation(name) {
+  if (name === "talk") return "talk";
+  if (name === "idle") return "idle";
+  return null;
+}
+
+async function handleSpeakRequest({ text, audio = true, voice = null }) {
+  if (!speechDriver) return { spoken: false, reason: "unavailable" };
+  const normalized = String(text ?? "").trim();
+  if (!normalized) return { spoken: false, reason: "empty" };
+  // Dedup nested Grok Stop hooks when Persona chat already spoke the same line.
+  if (
+    normalized === lastSpokenText &&
+    Date.now() - lastSpokenAt < 8_000
+  ) {
+    return { spoken: false, reason: "dedup" };
+  }
+  lastSpokenText = normalized;
+  lastSpokenAt = Date.now();
+  showOverlay();
+  // Body motion: only voice state → TALK (stable loop). The renderer rotates
+  // talk1/2/3 on a timer with soft crossfades — no MCP animation spam here.
+  return speechDriver.speak(normalized, { audio, voice });
+}function handleListenRequest() {
+  showOverlay();
+  speechDriver?.stop();
+  handleBridgeEvent(voiceState("listening"));
+}
+
+function handleStopSpeakingRequest() {
+  speechDriver?.stop();
+  handleBridgeEvent(voiceState("idle"));
 }
 
 function handleProtocolUrl(rawUrl) {
@@ -331,11 +401,60 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     app.setAppUserModelId("com.xikhar.persona");
-    app.dock?.hide();
-    if (app.isPackaged) app.setAsDefaultProtocolClient(protocolScheme);
+    // Keep the dock icon in unpackaged dev so the app is discoverable; packaged
+    // Persona stays tray-first like the upstream product.
+    if (app.isPackaged) {
+      app.dock?.hide();
+      app.setAsDefaultProtocolClient(protocolScheme);
+    } else {
+      app.dock?.show?.();
+    }
+    warnIfCharacterMediaMissing();
 
     ipcMain.handle("persona:get-snapshot", () => latestEvent);
     ipcMain.on("persona:hide", () => void hideOverlay());
+    ipcMain.handle("persona:stop-speaking", () => {
+      handleStopSpeakingRequest();
+    });
+    ipcMain.handle("persona:chat", async (_event, rawText) => {
+      const text = typeof rawText === "string" ? rawText.trim() : "";
+      if (!text) return { ok: false, text: "", error: "empty" };
+      showOverlay();
+      handleListenRequest();
+      const result = await askPersonaChat(text);
+      const reply = result.text || "…";
+      try {
+        await handleSpeakRequest({ text: reply, audio: true });
+      } catch (error) {
+        debugLog("speak failed", error);
+      }
+      return result;
+    });
+
+    speechDriver = new SpeechDriver({
+      onState: (activity, phase) => {
+        handleBridgeEvent(voiceState(activity, phase));
+      },
+      onLevel: (level) => {
+        handleBridgeEvent({ type: "audio-level", level });
+      },
+      onAnimation: (name) => {
+        const animation = mapSpeechAnimation(name);
+        if (animation == null) return;
+        const eventName = getAnimationEventName(animation);
+        if (eventName == null) return;
+        // Talk/idle from speech should not use one-shot MCP override priority
+        // except as voice animation; drive via state (talk) + levels.
+        if (eventName === "TALK" || eventName === "IDLE") return;
+        mcpAnimationRequestId += 1;
+        handleBridgeEvent({
+          type: "animation",
+          animation: eventName,
+          source: "mcp",
+          requestId: mcpAnimationRequestId,
+        });
+      },
+    });
 
     const mcpHandler = createPersonaMcpHandler({
       onAnimation: (animation) => {
@@ -351,11 +470,16 @@ if (!app.requestSingleInstanceLock()) {
       },
       onWindowAction: handleMcpWindowAction,
       getStatus: getMcpStatus,
+      onSpeak: handleSpeakRequest,
+      onListen: handleListenRequest,
+      onStopSpeaking: handleStopSpeakingRequest,
     });
     bridge = createBridgeServer({
       port: Number(process.env.PERSONA_BRIDGE_PORT || DEFAULT_PORT),
       onEvent: handleBridgeEvent,
       mcpHandler,
+      onSpeak: handleSpeakRequest,
+      onListen: handleListenRequest,
     });
     try {
       await bridge.listen();
@@ -411,6 +535,7 @@ app.on("activate", () => showOverlay({ focus: true }));
 app.on("before-quit", () => {
   isQuitting = true;
   clearTimeout(hyprlandConfigurationTimer);
+  speechDriver?.stop();
   audioListener?.stop();
   globalShortcut.unregisterAll();
   void bridge?.close().catch((error) => debugLog("integration server close failed", error));
